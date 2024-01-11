@@ -202,37 +202,36 @@ public class CalculateAverage_mtopolnik {
 
         private void processChunk() {
             while (cursor < inputSize) {
+                boolean withinSafeZone;
                 long word1;
-                long word2;
                 if (cursor + 2 * Long.BYTES <= inputSize) {
+                    withinSafeZone = true;
                     word1 = UNSAFE.getLong(inputBase + cursor);
-                    word2 = UNSAFE.getLong(inputBase + cursor + Long.BYTES);
                 }
                 else {
+                    withinSafeZone = false;
                     UNSAFE.putLong(nameBufBase, 0);
                     UNSAFE.putLong(nameBufBase + Long.BYTES, 0);
                     UNSAFE.copyMemory(inputBase + cursor, nameBufBase, Long.min(NAMEBUF_SIZE, inputSize - cursor));
                     word1 = UNSAFE.getLong(nameBufBase);
-                    word2 = UNSAFE.getLong(nameBufBase + Long.BYTES);
                 }
-                long posOfSemicolon = posOfSemicolon(word1, word2);
+                long posOfSemicolon = posOfSemicolon(word1, withinSafeZone);
                 word1 = maskWord(word1, posOfSemicolon - cursor);
-                word2 = maskWord(word2, posOfSemicolon - cursor - Long.BYTES);
                 long hash = hash(word1);
                 long namePos = cursor;
                 long nameLen = posOfSemicolon - cursor;
                 assert nameLen <= 100 : "nameLen > 100";
                 int temperature = parseTemperatureAndAdvanceCursor(posOfSemicolon);
-                updateStats(hash, namePos, nameLen, word1, word2, temperature);
+                updateStats(hash, namePos, nameLen, word1, temperature);
             }
         }
 
-        private void updateStats(long hash, long namePos, long nameLen, long nameWord1, long nameWord2, int temperature) {
+        private void updateStats(long hash, long namePos, long nameLen, long nameWord1, int temperature) {
             int tableIndex = (int) (hash & TABLE_INDEX_MASK);
             while (true) {
                 stats.gotoIndex(tableIndex);
                 if (stats.hash() == hash && stats.nameLen() == nameLen
-                        && nameEquals(stats.nameAddress(), inputBase + namePos, nameLen, nameWord1, nameWord2)) {
+                        && nameEquals(stats.nameAddress(), inputBase + namePos, nameLen, nameWord1)) {
                     stats.setSum(stats.sum() + temperature);
                     stats.setCount(stats.count() + 1);
                     stats.setMin((short) Integer.min(stats.min(), temperature));
@@ -331,10 +330,9 @@ public class CalculateAverage_mtopolnik {
             return hash;
         }
 
-        private static boolean nameEquals(long statsAddr, long inputAddr, long len, long inputWord1, long inputWord2) {
+        private static boolean nameEquals(long statsAddr, long inputAddr, long len, long inputWord1) {
             boolean mismatch1 = maskWord(inputWord1, len) != UNSAFE.getLong(statsAddr);
-            boolean mismatch2 = maskWord(inputWord2, len - Long.BYTES) != UNSAFE.getLong(statsAddr + Long.BYTES);
-            if (mismatch1 | mismatch2) {
+            if (mismatch1) {
                 return false;
             }
             for (int i = 2 * Long.BYTES; i < len; i++) {
@@ -356,24 +354,14 @@ public class CalculateAverage_mtopolnik {
 
         // Adapted from https://jameshfisher.com/2017/01/24/bitwise-check-for-zero-byte/
         // and https://github.com/ashvardanian/StringZilla/blob/14e7a78edcc16b031c06b375aac1f66d8f19d45a/stringzilla/stringzilla.h#L139-L169
-        long posOfSemicolon(long word1, long word2) {
+        long posOfSemicolon(long word1, boolean withinSafeZone) {
             long diff = word1 ^ BROADCAST_SEMICOLON;
             long matchBits1 = (diff - BROADCAST_0x01) & ~diff & BROADCAST_0x80;
-            diff = word2 ^ BROADCAST_SEMICOLON;
-            long matchBits2 = (diff - BROADCAST_0x01) & ~diff & BROADCAST_0x80;
-            if ((matchBits1 | matchBits2) != 0) {
+            if (matchBits1 != 0) {
                 int trailing1 = Long.numberOfTrailingZeros(matchBits1);
-                int match1IsNonZero = trailing1 & 63;
-                match1IsNonZero |= match1IsNonZero >>> 3;
-                match1IsNonZero |= match1IsNonZero >>> 1;
-                match1IsNonZero |= match1IsNonZero >>> 1;
-                // Now match1IsNonZero is 1 if it's non-zero, else 0. Use it to
-                // raise the lowest bit in traling2 if trailing1 is nonzero. This forces
-                // trailing2 to be zero if trailing1 is non-zero.
-                int trailing2 = Long.numberOfTrailingZeros(matchBits2 | match1IsNonZero) & 63;
-                return cursor + ((trailing1 | trailing2) >> 3);
+                return cursor + (trailing1 >> 3);
             }
-            long offset = cursor + 2 * Long.BYTES;
+            long offset = cursor + Long.BYTES;
             for (; offset <= inputSize - Long.BYTES; offset += Long.BYTES) {
                 var block = UNSAFE.getLong(inputBase + offset);
                 diff = block ^ BROADCAST_SEMICOLON;
