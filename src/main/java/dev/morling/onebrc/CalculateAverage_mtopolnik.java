@@ -199,13 +199,18 @@ public class CalculateAverage_mtopolnik {
             int tableIndex = (int) (hash & TABLE_INDEX_MASK);
             while (true) {
                 stats.gotoIndex(tableIndex);
-                if (stats.hash() == hash && stats.nameLen() == nameLen && nameEquals(
-                        stats.nameAddress(), nameStartAddress, nameLen, nameWord1, nameWord2, withinSafeZone)) {
-                    stats.setSum(stats.sum() + temperature);
-                    stats.setCount(stats.count() + 1);
-                    stats.setMin((short) Integer.min(stats.min(), temperature));
-                    stats.setMax((short) Integer.max(stats.max(), temperature));
-                    return;
+                long statsNameAddr = stats.nameAddress();
+                if (stats.hash() == hash && stats.nameLen() == nameLen) {
+                    boolean mismatch1 = maskWord(nameWord1, nameLen) != UNSAFE.getLong(statsNameAddr);
+                    boolean mismatch2 = maskWord(nameWord2, nameLen - Long.BYTES) != UNSAFE.getLong(statsNameAddr + Long.BYTES);
+                    if (nameLen <= 2 * Long.BYTES && !(mismatch1 | mismatch2)
+                            || nameTailEquals(statsNameAddr, nameStartAddress, nameLen, withinSafeZone)) {
+                        stats.setSum(stats.sum() + temperature);
+                        stats.setCount(stats.count() + 1);
+                        stats.setMin((short) Integer.min(stats.min(), temperature));
+                        stats.setMax((short) Integer.max(stats.max(), temperature));
+                        return;
+                    }
                 }
                 if (stats.nameLen() != 0) {
                     tableIndex = (tableIndex + 1) & TABLE_INDEX_MASK;
@@ -217,7 +222,7 @@ public class CalculateAverage_mtopolnik {
                 stats.setCount(1);
                 stats.setMin((short) temperature);
                 stats.setMax((short) temperature);
-                UNSAFE.copyMemory(nameStartAddress, stats.nameAddress(), nameLen);
+                UNSAFE.copyMemory(nameStartAddress, statsNameAddr, nameLen);
                 return;
             }
         }
@@ -285,13 +290,7 @@ public class CalculateAverage_mtopolnik {
             return hash;
         }
 
-        private static boolean nameEquals(long statsAddr, long inputAddr, long len, long inputWord1, long inputWord2,
-                                          boolean withinSafeZone) {
-            boolean mismatch1 = maskWord(inputWord1, len) != UNSAFE.getLong(statsAddr);
-            boolean mismatch2 = maskWord(inputWord2, len - Long.BYTES) != UNSAFE.getLong(statsAddr + Long.BYTES);
-            if (len <= 2 * Long.BYTES) {
-                return !(mismatch1 | mismatch2);
-            }
+        private static boolean nameTailEquals(long statsAddr, long inputAddr, long len, boolean withinSafeZone) {
             if (withinSafeZone) {
                 int i = 2 * Long.BYTES;
                 for (; i <= len - Long.BYTES; i += Long.BYTES) {
